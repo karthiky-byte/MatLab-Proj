@@ -1,0 +1,51 @@
+function [pkt_id, pkt_index, pkt_prob, new_index, dbg_energy, peak_loc, snippet] = MCU_Node_fn_snip( ...
+    audio_in, start_index, fs_in, energy_th, node_id)
+% Frame-based MCU node that detects an event and returns a fixed-length snippet
+% FIXED snippet length L = 512 (compile-time constant)
+
+%#codegen
+L = 512;                % <--- FIXED compile-time constant, change here if desired
+
+% default outputs
+pkt_id = -1.0;
+pkt_index = 0.0;
+pkt_prob = 0.0;
+dbg_energy = 0.0;
+peak_loc = 0.0;
+
+frame_len = double(length(audio_in));
+new_index = double(start_index + frame_len);
+
+% default snippet - fixed size
+snippet = zeros(L,1);
+
+% quantize / normalize (elementwise)
+audio_q = round(audio_in .* (2^(15)-1)) ./ (2^(15)-1);
+
+% compute energy and peak
+dbg_energy = sum(audio_q .^ 2);
+[~, local_peak] = max(abs(audio_q));   % 1..frame_len
+
+% detection
+if dbg_energy > energy_th
+    pkt_id = double(node_id);
+    pkt_index = double(start_index) + double(local_peak) - 1.0;
+    peak_loc = double(local_peak);
+    pkt_prob = min(1.0, (abs(audio_q(local_peak)) + dbg_energy) / (energy_th * 10.0));
+    % extract snippet centered on local_peak into snippet(1:len)
+    halfL = floor(L/2);
+    s_idx = double(local_peak) - halfL;
+    e_idx = s_idx + L - 1;
+    % clamp indices
+    if s_idx < 1
+        s_idx = 1;
+        e_idx = min(L, frame_len);
+    end
+    if e_idx > frame_len
+        e_idx = frame_len;
+        s_idx = max(1, frame_len - L + 1);
+    end
+    len = e_idx - s_idx + 1;
+    snippet(1:len) = audio_in(s_idx:e_idx);
+end
+end

@@ -1,0 +1,27 @@
+function [ids, idxs, probs, snippets] = PacketAssembler_snip( ...
+    id1, ind1, p1, snip1, id2, ind2, p2, snip2, id3, ind3, p3, snip3)
+%#codegen
+% Assemble outputs from 3 MCU nodes into arrays and a snippets matrix
+% Inputs:
+%   idX, indX, pX  : scalars
+%   snipX          : [L x 1] vector
+% Outputs:
+%   ids   : [3 x 1]
+%   idxs  : [3 x 1]
+%   probs  : [3 x 1]
+%   snippets : [L x 3]  (columns are snip1, snip2, snip3)
+
+% Assumes snip1/2/3 are same length L
+L = size(snip1,1);
+
+ids = [id1; id2; id3];
+idxs = [ind1; ind2; ind3];
+probs = [p1; p2; p3];
+
+% pre-allocate snippets matrix and fill columns
+snippets = zeros(L,3);
+snippets(:,1) = snip1;
+snippets(:,2) = snip2;
+snippets(:,3) = snip3;
+
+end

@@ -1,0 +1,113 @@
+function [s_est, valid] = Central_Server_fn(ids, snippets, mic_positions, fs, c)
+% Central_Server_fn - GCC-PHAT based TDOA localization
+% Inputs:
+%   ids          : [N x 1] node ids (double)
+%   snippets     : [L x N] snippet columns, each column is snippet from mic j
+%   mic_positions: [2 x N] mic coordinates (meters)
+%   fs           : sampling rate (Hz)
+%   c            : speed of sound (m/s)
+% Outputs:
+%   s_est        : [2 x 1] estimated source location (m)
+%   valid        : logical/double true if estimate computed
+
+%#codegen
+valid = false;
+s_est = zeros(2,1);
+
+% basic checks
+if isempty(ids) || isempty(snippets) || size(snippets,2) < 3
+    return;
+end
+
+N = size(snippets,2);
+L = size(snippets,1);
+
+% choose reference mic as column 1
+ref = 1;
+
+% Pre-allocate tdoa (seconds) vector for pairs ref->j
+tdoa_meas = zeros(N-1,1);
+pair_idx = 0;
+
+% FFT length for cross-correlation (next pow of 2 >= 2*L)
+nfft = 2^nextpow2(2*L);
+
+% compute GCC-PHAT between ref and each other mic
+Xref = fft(snippets(:,ref), nfft);
+for j = 1:N
+    if j == ref, continue; end
+    pair_idx = pair_idx + 1;
+    Xj = fft(snippets(:,j), nfft);
+    R = Xref .* conj(Xj);
+    % PHAT weight
+    R = R ./ (abs(R) + eps);
+    cc = ifft(R);
+    % cc is length nfft, find peak and refine by parabolic interpolation
+    % shift cross-corr so lags: -nfft/2..nfft/2-1
+    ccmag = abs(cc);
+    [~, Imax] = max(ccmag);
+    % convert to zero-based index
+    k = Imax - 1;
+    % handle wrapping: convert index to signed lag in samples
+    if k <= nfft/2 - 1
+        lag = k;
+    else
+        lag = k - nfft;
+    end
+    % parabolic interpolation around Imax (use modular indexing)
+    left = mod(Imax-2, nfft) + 1;
+    right = mod(Imax, nfft) + 1;
+    y1 = ccmag(left); y2 = ccmag(Imax); y3 = ccmag(right);
+    denom = (y1 - 2*y2 + y3);
+    if abs(denom) < eps
+        delta = 0.0;
+    else
+        delta = 0.5 * (y1 - y3) / denom;   % fractional offset (samples)
+    end
+    lag_corrected = double(lag) + double(delta);
+    % convert lag (samples) to time (seconds) t_ref - t_j
+    tdoa_meas(pair_idx) = -lag_corrected / double(fs); 
+    % NOTE: we used lag as index of cc = correlation ref vs j, and defined tdoa as (t_j - t_ref).
+    % sign convention chosen so (di - dj)/c = tdoa_ref_j, solver below expects (di-dj)/c = tvec(i)-tvec(j)
+end
+
+% Build pairs array for solver: we will create pairs between mics [1..N] using ref as anchor
+% Convert tdoa_meas to pairwise format consistent with solver: for i=ref and j others:
+pairs = zeros(N-1,2);
+for k = 1:(N-1)
+    pairs(k,1) = ref;
+    pairs(k,2) = k+1;
+end
+
+% initial guess: centroid of microphone positions
+s = mean(mic_positions,2);
+
+% Gauss-Newton solve (use same residual model as earlier)
+for iter = 1:10
+    m = size(pairs,1);
+    r = zeros(m,1); J = zeros(m,2);
+    for k = 1:m
+        i = pairs(k,1);
+        j = pairs(k,2);
+        pi = mic_positions(:,i);
+        pj = mic_positions(:,j);
+        di = norm(s - pi); dj = norm(s - pj);
+        if di == 0, di = 1e-6; end
+        if dj == 0, dj = 1e-6; end
+        % predicted TDOA (seconds) = (di - dj) / c
+        pred = (di - dj) / c;
+        r(k) = pred - tdoa_meas(k);
+        J(k,1) = ((s(1)-pi(1))/di - (s(1)-pj(1))/dj) / c;
+        J(k,2) = ((s(2)-pi(2))/di - (s(2)-pj(2))/dj) / c;
+    end
+    H = J' * J + 1e-6 * eye(2);
+    delta = H \ (J' * r);
+    s = s - delta;
+    if norm(delta) < 1e-6
+        break;
+    end
+end
+
+s_est = s;
+valid = true;
+end
